@@ -40,6 +40,17 @@ _ROWS = [
 ]
 
 
+_BS_ACCOUNT_NAMES = {"유동자산", "유동부채", "비유동자산", "비유동부채", "자산총계", "부채총계", "자본총계"}
+
+
+def _sj_nm_for(account_nm: str) -> str:
+    """standardize_accounts가 이제 sj_nm으로 매칭 대상을 좋히므로, 표본 데이터도
+    실제 DART 응답처럼 계정이 재무상태표/손익계산서 중 어디 속하는지 태깅해야 한다.
+    """
+    base_name = account_nm.split("(")[0]
+    return "재무상태표" if base_name in _BS_ACCOUNT_NAMES else "포괄손익계산서"
+
+
 def _sample_long_df(rows=None) -> pd.DataFrame:
     rows = _ROWS if rows is None else rows
     return pd.DataFrame(
@@ -47,7 +58,7 @@ def _sample_long_df(rows=None) -> pd.DataFrame:
             {
                 "period": period,
                 "period_label": period,
-                "sj_nm": "재무상태표",
+                "sj_nm": _sj_nm_for(account_nm),
                 "account_nm": account_nm,
                 "account_id": account_id,
                 "amount": float(amount),
@@ -59,7 +70,8 @@ def _sample_long_df(rows=None) -> pd.DataFrame:
 
 def test_standardize_accounts_matches_by_id_and_name_fallback_and_derives_gross_profit():
     long_df = _sample_long_df()
-    accounts_wide, missing, derived_notes = standardize_accounts(long_df)
+    accounts_wide, missing, derived_notes, ambiguous = standardize_accounts(long_df)
+    assert ambiguous == []
 
     assert missing == []
     # 매출총이익은 어느 기간에도 직접 태깅되지 않았으므로 매출액-매출원가로 파생되어야 함
@@ -83,14 +95,14 @@ def test_standardize_accounts_matches_by_id_and_name_fallback_and_derives_gross_
 def test_standardize_accounts_reports_missing_when_account_absent_in_any_period():
     rows = [r for r in _ROWS if not (r[0] == "당기" and r[1] == "당기순이익")]
     long_df = _sample_long_df(rows)
-    _, missing, _ = standardize_accounts(long_df)
+    _, missing, _, _ = standardize_accounts(long_df)
 
     assert "당기순이익" in missing
 
 
 def test_compute_ratios_current_period_values():
     long_df = _sample_long_df()
-    ratio_df, missing, _ = compute_ratios(long_df)
+    ratio_df, missing, _, _ = compute_ratios(long_df)
 
     assert missing == []
     assert ratio_df.loc["유동비율", "당기"] == pytest.approx(220.0)
@@ -103,7 +115,7 @@ def test_compute_ratios_current_period_values():
 
 def test_compute_ratios_uses_period_end_value_when_no_prior_period_for_average():
     long_df = _sample_long_df()
-    ratio_df, _, _ = compute_ratios(long_df)
+    ratio_df, _, _, _ = compute_ratios(long_df)
 
     # 전전기는 그 이전 기간 데이터가 없으므로 평균이 아닌 기말값을 그대로 사용
     assert ratio_df.loc["ROA", "전전기"] == pytest.approx(40 / 1000 * 100)
@@ -112,7 +124,7 @@ def test_compute_ratios_uses_period_end_value_when_no_prior_period_for_average()
 
 def test_compute_ratios_change_column_vs_prior_period():
     long_df = _sample_long_df()
-    ratio_df, _, _ = compute_ratios(long_df)
+    ratio_df, _, _, _ = compute_ratios(long_df)
 
     assert ratio_df.loc["유동비율", "전기대비증감률(%)"] == pytest.approx(10.0)
 
@@ -120,7 +132,7 @@ def test_compute_ratios_change_column_vs_prior_period():
 def test_compute_ratios_blank_when_denominator_missing_or_zero():
     rows = [r for r in _ROWS if not (r[1] == "자본총계")]
     long_df = _sample_long_df(rows)
-    ratio_df, missing, _ = compute_ratios(long_df)
+    ratio_df, missing, _, _ = compute_ratios(long_df)
 
     assert "자본총계" in missing
     assert all(math.isnan(v) for v in ratio_df.loc["부채비율"])
@@ -129,11 +141,11 @@ def test_compute_ratios_blank_when_denominator_missing_or_zero():
 
 def test_get_bs_chart_items_converts_to_eok_and_reports_missing():
     long_df = _sample_long_df()
-    accounts_wide, _, _ = standardize_accounts(long_df)
+    accounts_wide, _, _, _ = standardize_accounts(long_df)
     item_df, missing = get_bs_chart_items(accounts_wide)
 
     assert missing == []
-    # 억원 단위(1e8원=1억) 환산: 표본 데이터의 원 단위(1,400 등)를 그대로 나눔
+    # 억원 단위(1e8원=1억) 환산: 표본 데이터의 원 단위(1,400 등)를 그대로 나눗
     assert item_df.loc["유동자산", "당기"] == pytest.approx(440 / 1e8)
     assert item_df.loc["비유동자산", "당기"] == pytest.approx((1400 - 440) / 1e8)
 
@@ -142,8 +154,64 @@ def test_get_bs_chart_items_reports_missing_when_derivation_impossible():
     # 유동자산이 아예 없으면 비유동자산도 파생 불가 -> 그래프에서 공란 처리 대상
     rows = [r for r in _ROWS if not (r[1] == "유동자산")]
     long_df = _sample_long_df(rows)
-    accounts_wide, _, _ = standardize_accounts(long_df)
+    accounts_wide, _, _, _ = standardize_accounts(long_df)
     _, missing = get_bs_chart_items(accounts_wide)
 
     assert "유동자산" in missing
     assert "비유동자산" in missing
+
+
+def test_standardize_accounts_duplicate_account_id_same_value_is_fine():
+    """같은 account_id를 가진 행이 여러 개여도 값이 전부 같으면 문제없이 그 값을 쓴다."""
+    rows = _ROWS + [("당기", "유동자산(중복행)", "ifrs-full_CurrentAssets", 440)]
+    long_df = _sample_long_df(rows)
+
+    accounts_wide, missing, _, ambiguous = standardize_accounts(long_df)
+
+    assert ambiguous == []
+    assert "유동자산" not in missing
+    assert accounts_wide.loc["유동자산", "당기"] == pytest.approx(440.0)
+
+
+def test_standardize_accounts_duplicate_account_id_conflicting_value_is_blanked_with_warning():
+    """같은 account_id인데 값이 다르면 임의로 첫 값을 택하지 않고 공란+경고 처리한다."""
+    rows = _ROWS + [("당기", "유동자산(오류행)", "ifrs-full_CurrentAssets", 999)]
+    long_df = _sample_long_df(rows)
+
+    accounts_wide, missing, _, ambiguous = standardize_accounts(long_df)
+
+    assert math.isnan(accounts_wide.loc["유동자산", "당기"])
+    assert "유동자산" in missing  # 필수계정이라 매핑 실패 목록에도 포함됨
+    assert any("유동자산" in note and "당기" in note for note in ambiguous)
+
+
+def test_standardize_accounts_ignores_statement_of_changes_in_equity_duplicates():
+    """자본변동표는 같은 account_id(예: 자본총계)를 기초자본/배당/당기순이익반영/기말자본
+    등 여러 행에서 재사용하는데, 이는 실제 DART 응답에서 관찰된 정상적인 구조이지 오류가
+    아니다. sj_nm으로 재무상태표만 보도록 좋혀서, 이런 자본변동표 행들이 재무상태표의
+    진짜 자본총계 값과 충돌하는 것처럼 오판(false positive)하지 않아야 한다.
+    """
+    rows = _ROWS + [
+        # 실측(SK하이닉스)에서 관찰된 패턴을 축소 재현: 같은 account_id, 다른 sj_nm/값
+        ("당기", "자본총계", "ifrs-full_Equity", 999),  # 일단 재무상태표로 태깅되지만 아래서 sj_nm만 자본변동표로 덮어쓰
+    ]
+    long_df = _sample_long_df(rows)
+    # 방금 추가한 행만 자본변동표로 재태깅(자본변동표의 다른 소계 행을 흥내냴)
+    long_df.loc[long_df.index[-1], "sj_nm"] = "자본변동표"
+
+    accounts_wide, missing, _, ambiguous = standardize_accounts(long_df)
+
+    assert ambiguous == []
+    assert "자본총계" not in missing
+    # 재무상태표의 원래 값(840)이 그대로 쓰여야 하고, 자본변동표의 999는 무시되어야 함
+    assert accounts_wide.loc["자본총계", "당기"] == pytest.approx(840.0)
+
+
+def test_compute_ratios_propagates_ambiguous_matches():
+    rows = _ROWS + [("당기", "유동자산(오류행)", "ifrs-full_CurrentAssets", 999)]
+    long_df = _sample_long_df(rows)
+
+    ratio_df, _, _, ambiguous = compute_ratios(long_df)
+
+    assert ambiguous != []
+    assert math.isnan(ratio_df.loc["유동비율", "당기"])
