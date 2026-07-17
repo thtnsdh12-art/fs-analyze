@@ -130,6 +130,8 @@ def fetch_financial_statements(
     전기(frmtrm)/전전기(bfefrmtrm) 금액이 함께 포함되어 3개년을 한 번에 확보할 수 있다.
 
     fs_div: "OFS"=개별/별도재무제표(기본값), "CFS"=연결재무제표
+    해당 fs_div의 재무제표가 없는 회사(예: 연결 대상 종속기업이 없어 CFS 미공시)는
+    status="013"(데이터없음)으로 응답하며, 이는 오류가 아니라 빈 DataFrame으로 정상 처리된다.
     """
     params = {
         "crtfc_key": config.require_api_key(),
@@ -145,3 +147,39 @@ def fetch_financial_statements(
     payload = resp.json()
     _check_status(payload, "fnlttSinglAcntAll.json")
     return pd.DataFrame(payload.get("list") or [])
+
+
+def fetch_financial_statements_auto(
+    corp_code: str,
+    bsns_year: str,
+    reprt_code: str = "11011",
+    fs_div_override: str | None = None,
+    fs_div_hint: str | None = None,
+) -> tuple[pd.DataFrame, str, bool]:
+    """연결/별도 여부를 계정과목 내용으로 추론하지 않고, DART API 응답 자체로 확정한다.
+
+    우선순위:
+      1. fs_div_override — 사용자가 --fs-div로 명시한 값. 폴백 없이 그 값만 조회한다.
+      2. fs_div_hint — 사용자가 붙여넣은 링크의 dcmNo가 가리키는 첨부문서명(예: "감사보고서"
+         vs "연결감사보고서")으로 추정된 값(src.doc_tree). 사용자가 실제로 클릭해서 가져온
+         문서이므로 CFS 우선 기본값보다 우선한다. 다만 그 기준의 재무제표가 실제로 없으면
+         (예: 링크는 별도였지만 그해 별도재무제표 미공시) 반대쪽으로 자동 폴백한다.
+      3. 힌트도 없으면 연결재무제표(CFS)를 먼저 요청하고, 응답이 비어 있으면(연결 대상
+         종속기업이 없어 CFS를 공시하지 않는 회사) 별도재무제표(OFS)로 자동 폴백한다.
+         상장사 감사보고서의 주 재무제표는 연결이므로(K-IFRS), CFS 우선이 기본 동작에 맞다.
+
+    반환: (재무제표 DataFrame, 실제 조회에 사용된 fs_div, 의도한 기준에서 폴백 발생 여부)
+    """
+    if fs_div_override:
+        df = fetch_financial_statements(corp_code, bsns_year, reprt_code, fs_div=fs_div_override)
+        return df, fs_div_override, False
+
+    first_choice = fs_div_hint or "CFS"
+    other_choice = "OFS" if first_choice == "CFS" else "CFS"
+
+    df = fetch_financial_statements(corp_code, bsns_year, reprt_code, fs_div=first_choice)
+    if not df.empty:
+        return df, first_choice, False
+
+    df = fetch_financial_statements(corp_code, bsns_year, reprt_code, fs_div=other_choice)
+    return df, other_choice, True
