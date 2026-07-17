@@ -1,6 +1,6 @@
 import pytest
 
-from src.link_parser import InvalidDartLinkError, extract_rcept_no
+from src.link_parser import InvalidDartLinkError, extract_dcm_no, extract_rcept_no
 
 
 def test_extract_rcept_no_from_viewer_url():
@@ -26,3 +26,13 @@ def test_extract_rcept_no_missing_raises():
 def test_extract_rcept_no_rejects_wrong_length():
     with pytest.raises(InvalidDartLinkError):
         extract_rcept_no("https://dart.fss.or.kr/dsaf001/main.do?rcpNo=12345")
+
+
+def test_extract_dcm_no_present():
+    url = "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260320001036&dcmNo=11158217"
+    assert extract_dcm_no(url) == "11158217"
+
+
+def test_extract_dcm_no_missing_returns_none():
+    url = "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260320001036"
+    assert extract_dcm_no(url) is None
