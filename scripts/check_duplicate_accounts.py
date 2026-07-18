@@ -49,7 +49,7 @@ def find_duplicate_account_ids(long_df: pd.DataFrame) -> pd.DataFrame:
     정상이고 오류가 아니다. sj_nm으로 먼저 묶지 않고 (period, account_id)만으로 묶으면
     이런 자본변동표 재사용을 전부 "충돌"로 오판하는 대량의 가짜 양성이 나온다(실측 SK
     하이닉스 CFS에서 확인됨). 그래서 반드시 (period, sj_nm, account_id)로 묶는다 —
-    ratios.py의 standardize_accounts()가 sj_nm으로 매칭 대상을 좋히는 것과 동일한 원리다.
+    ratios.py의 standardize_accounts()가 sj_nm으로 매칭 대상을 좁히는 것과 동일한 원리.
 
     ratios.py는 표준화 대상 계정(ACCOUNT_ALIASES) 8~12개만 검사하지만, 이 함수는
     회사가 공시한 모든 계정(수십~수백 개)을 대상으로 훑어 표준화 범위 밖의 계정에서도

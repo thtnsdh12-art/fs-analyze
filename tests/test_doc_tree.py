@@ -14,11 +14,11 @@ class _FakeResponse:
 
 
 def _viewer_html(*node_texts: str) -> str:
-    """실제 DART 뷰어 페이지에서 관찰되는 makeToc() 스니펫을 흥낸다.
+    """실제 DART 뷰어 페이지에서 관찰되는 makeToc() 스니펫을 흉내낸다.
 
     실제 페이지는 최상위 노드(node1, 첫 항목) 제목이 연결/별도 감사보고서 모두
     "감사보고서"로 동일하고, "(첨부)연결재무제표"처럼 하위 항목에서만 연결 여부가
-    드러난다 — 그래서 테스트도 여러 노드를 함께 흥낸다.
+    드러난다 — 그래서 테스트도 여러 노드를 함께 흉내낸다.
     """
     nodes = "\n".join(f"node1['text'] = \"{t}\";" for t in node_texts)
     return f"function makeToc() {{\n{nodes}\n}}"

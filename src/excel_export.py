@@ -1,6 +1,6 @@
 """3개년 재무제표/재무비율을 그래프 포함 엑셀(.xlsx)로 출력한다.
 
-VBA 매크로 방식(.xlsm) 대신 openpyxl로 엑셀 네이티브 차트를 직접 삽입한다.
+VBA 매크로 방식(.xlsm) 대신 openpyxl로 네이티브 엑셀 차트를 직접 삽입한다.
 매크로가 없으므로 감사법인 보안정책상 매크로 파일이 차단되는 문제가 없고,
 받는 사람이 "매크로 사용" 설정 없이 파일을 열자마자 표/그래프를 볼 수 있다.
 """
@@ -32,7 +32,7 @@ MAIN_RATIO_CHART_ITEMS = ["유동비율", "부채비율", "자기자본비율", 
 
 # 원 항목 그래프는 자산 구성/부채 구성을 각각 스택 바 차트로 분리한다.
 # (자산과 부채를 하나의 스택으로 합치면 합계가 자산총계도 부채총계도 아닌
-# 의미 없는 숫자가 되므로, 구성비가 각각 명확히 드러나도록 둘로 나눠)
+# 의미 없는 숫자가 되므로, 구성비가 각각 명확히 드러나도록 둘로 나눔)
 ASSET_STRUCTURE_ITEMS = ["유동자산", "비유동자산"]
 LIABILITY_STRUCTURE_ITEMS = ["유동부채", "비유동부채"]
 
@@ -120,8 +120,8 @@ def _add_bs_item_table(ws: Worksheet, item_df: pd.DataFrame, title_row: int) -> 
 def _chart_title_with_unit(main_text: str, unit_text: str) -> Title:
     """차트 제목 아래에 단위 표기를 오른쪽 정렬로 붙인 2줄짜리 제목을 만든다.
 
-    세로축 제목으로 단위를 표시하면 눈금 숫자와 격여 보이는 문제가 있어(사용자 피드백),
-    플롯 영역 밖(차트 제목 영역)의 오른쪽 구석에 단위만 별도 줄로 배치한다.
+    세로축 제목으로 단위를 표시하면 눈금 숫자와 겹쳐 보이는 문제가 있어(사용자 피드백),
+    플롯 영역 바깥(차트 제목 영역)의 오른쪽 구석에 단위만 별도 줄로 배치한다.
     """
     main_run = RegularTextRun(t=main_text, rPr=CharacterProperties(b=True, sz=1400))
     main_para = Paragraph(pPr=ParagraphProperties(algn="ctr"), r=[main_run])
@@ -136,10 +136,10 @@ def _configure_axes(chart, height: float = 14, width: float = 26) -> None:
     """openpyxl 라인/바 차트 공통 축 설정.
 
     openpyxl의 LineChart/BarChart는 x_axis.axPos 기본값이 "l"(왼쪽)이라 카테고리축과
-    값축이 같은 위치에 격쳐 엑셀에서 차트가 깨져 보인다(빈 플레이스홀더처럼 렌더링됨).
+    값축이 같은 위치에 겹쳐 엑셀에서 차트가 깨져 보인다(빈 플레이스홀더처럼 렌더링됨).
     반드시 axPos를 명시적으로 지정해야 한다. 마찬가지로 openpyxl은 axId만 만들고
     delete/tickLblPos를 비워두는데, 그러면 엑셀이 눈금 라벨을 숨겨버리므로
-    두 축 모두 명시적으로 "삭제 안 함" + "축 옷에 라벨 표시"로 지정해야 한다.
+    두 축 모두 명시적으로 "삭제 안 함" + "축 옆에 라벨 표시"로 지정해야 한다.
     """
     chart.x_axis.axPos = "b"
     chart.y_axis.axPos = "l"
@@ -149,7 +149,7 @@ def _configure_axes(chart, height: float = 14, width: float = 26) -> None:
     chart.y_axis.tickLblPos = "nextTo"
     chart.x_axis.majorTickMark = "out"
     chart.y_axis.majorTickMark = "out"
-    # 차트가 작으면 축 제목이 눈금 숫자/카테고리 라벨과 격쳐 보인다. 넘넍하게 키운다.
+    # 차트가 작으면 축 제목이 눈금 숫자/카테고리 라벨과 겹쳐 보인다. 넉넉하게 키운다.
     chart.height, chart.width = height, width
     chart.legend.position = "r"
     chart.legend.overlay = False
@@ -200,7 +200,7 @@ def _add_stacked_item_chart(
     """비율이 동일해도 절대 규모/구성비가 달라질 수 있음을 보여주는 스택 바 차트.
 
     예: 유동비율이 3개년 내내 150%로 동일해도 유동자산 비중이 계속 줄고 비유동자산
-    비중이 계속 늘는 구조 변화는 비율 지표만으로는 드러나지 않는다. 두 항목을
+    비중이 계속 느는 구조 변화는 비율 지표만으로는 드러나지 않는다. 두 항목을
     스택으로 쌓아 합계(자산총계 또는 부채총계) 대비 구성비 변화를 한눈에 보여준다.
     """
     period_cols = list(item_df.columns)
@@ -351,7 +351,7 @@ def _write_check_table(
     checks: list[verification.CheckResult],
     start_row: int,
 ) -> int:
-    """검증 결과 목록을 표로 쓼다. 반환값은 다음 콘텐츠를 이어 쓸 행 번호."""
+    """검증 결과 목록을 표로 쓴다. 반환값은 다음 콘텐츠를 이어 쓸 행 번호."""
     ws.cell(row=start_row, column=1, value=title).font = Font(bold=True)
     header_row = start_row + 1
     for j, header in enumerate(headers, start=1):

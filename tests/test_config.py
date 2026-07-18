@@ -11,7 +11,7 @@ def test_require_api_key_raises_config_error_when_missing(monkeypatch):
 
 
 def test_config_error_is_not_caught_by_bare_runtime_error_narrowing():
-    """API_ERRORS가 RuntimeError 대신 ConfigError만 잡도록 좋혀졌는지 확인.
+    """API_ERRORS가 RuntimeError 대신 ConfigError만 잡도록 좁혀졌는지 확인.
 
     ConfigError 자체는 (기존 DartApiError/ResolveError와 같은 프로젝트 관례상)
     RuntimeError를 상속하지만, main.py는 이제 bare RuntimeError가 아니라 ConfigError를
