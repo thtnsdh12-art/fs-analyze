@@ -249,6 +249,7 @@ def _add_info_sheet(
     missing_accounts: list[str],
     derived_notes: list[str],
     fs_note: str = "",
+    financial_markers: list[str] | None = None,
 ) -> None:
     ws = wb.create_sheet("안내", 0)
     ws.column_dimensions["A"].width = 22
@@ -274,6 +275,23 @@ def _add_info_sheet(
         r += 1
 
     r += 1
+    if financial_markers:
+        warn_cell = ws.cell(
+            row=r,
+            column=1,
+            value=(
+                "⚠️ 이 회사는 금융업(은행/보험/지주 등)으로 추정됩니다. 본 도구의 "
+                "표준 재무비율(유동비율 등)은 일반 기업 기준으로 설계되어 있어 "
+                "다수 지표가 공란 처리될 수 있습니다. 금융업종은 예대율/BIS비율 등 "
+                "별도 지표가 필요하며, 본 도구는 현재 이를 지원하지 않습니다."
+            ),
+        )
+        warn_cell.font = Font(bold=True, color="C00000", size=12)
+        warn_cell.fill = WARN_FILL
+        r += 1
+        ws.cell(row=r, column=1, value=f"(감지된 금융업 특유 계정: {', '.join(financial_markers)})")
+        r += 2
+
     if missing_accounts:
         ws.cell(
             row=r,
@@ -449,6 +467,7 @@ def build_workbook(
     bs_missing_items: list[str],
     accounts_wide: pd.DataFrame,
     fs_note: str = "",
+    financial_markers: list[str] | None = None,
 ) -> Workbook:
     wb = Workbook()
     wb.remove(wb.active)
@@ -456,7 +475,15 @@ def build_workbook(
     combined_missing = missing_accounts + [
         name for name in bs_missing_items if name not in missing_accounts
     ]
-    _add_info_sheet(wb, info, fs_div, combined_missing, derived_notes, fs_note=fs_note)
+    _add_info_sheet(
+        wb,
+        info,
+        fs_div,
+        combined_missing,
+        derived_notes,
+        fs_note=fs_note,
+        financial_markers=financial_markers,
+    )
     _add_financials_sheet(wb, wide_df)
     _add_ratio_sheet(wb, ratio_df)
     _add_bs_detail_sheet(wb, bs_item_df)
