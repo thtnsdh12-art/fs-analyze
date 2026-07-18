@@ -14,6 +14,7 @@ from openpyxl import Workbook
 from openpyxl.chart import BarChart, LineChart, Reference, Series
 from openpyxl.chart.text import RichText, Text
 from openpyxl.chart.title import Title
+from openpyxl.comments import Comment
 from openpyxl.drawing.text import CharacterProperties, Paragraph, ParagraphProperties, RegularTextRun
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -76,12 +77,37 @@ def _write_df(ws: Worksheet, df: pd.DataFrame, start_row: int, index_title: str)
     return start_row + len(df.index)
 
 
-def _add_ratio_sheet(wb: Workbook, ratio_df: pd.DataFrame) -> Worksheet:
+def _annotate_blank_ratio_cells(
+    ws: Worksheet,
+    ratio_df: pd.DataFrame,
+    table_start: int,
+    blank_reasons: dict[str, dict[str, str]] | None,
+) -> None:
+    """공란 처리된 비율 칸에, 왜 공란인지 설명하는 셀 메모(comment)를 붙인다."""
+    if not blank_reasons:
+        return
+    for name, period_reasons in blank_reasons.items():
+        if name not in ratio_df.index:
+            continue
+        row = table_start + 1 + ratio_df.index.get_loc(name)
+        for period, reason in period_reasons.items():
+            if period not in ratio_df.columns:
+                continue
+            col = 2 + ratio_df.columns.get_loc(period)
+            ws.cell(row=row, column=col).comment = Comment(reason, "fs-analyze")
+
+
+def _add_ratio_sheet(
+    wb: Workbook,
+    ratio_df: pd.DataFrame,
+    blank_reasons: dict[str, dict[str, str]] | None = None,
+) -> Worksheet:
     ws = wb.create_sheet("재무비율")
     ws.cell(row=1, column=1, value="3개년 재무비율 (단위: %)").font = TITLE_FONT
 
     table_start = 3
     last_row = _write_df(ws, ratio_df, table_start, "비율명")
+    _annotate_blank_ratio_cells(ws, ratio_df, table_start, blank_reasons)
     n_cols = len(ratio_df.columns) + 1
 
     # 전기대비증감률(%) 컬럼에서 급변동(|증감률|>=20%)을 감사 위험평가 관점에서 강조 표시
@@ -468,6 +494,7 @@ def build_workbook(
     accounts_wide: pd.DataFrame,
     fs_note: str = "",
     financial_markers: list[str] | None = None,
+    blank_reasons: dict[str, dict[str, str]] | None = None,
 ) -> Workbook:
     wb = Workbook()
     wb.remove(wb.active)
@@ -485,7 +512,7 @@ def build_workbook(
         financial_markers=financial_markers,
     )
     _add_financials_sheet(wb, wide_df)
-    _add_ratio_sheet(wb, ratio_df)
+    _add_ratio_sheet(wb, ratio_df, blank_reasons=blank_reasons)
     _add_bs_detail_sheet(wb, bs_item_df)
 
     ratio_checks = verification.verify_ratios(accounts_wide, ratio_df)
