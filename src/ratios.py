@@ -21,9 +21,9 @@ _PREV_PERIOD = {"전기": "전전기", "당기": "전기"}
 # 한 테이블에 섞어서 준다. 특히 자본변동표는 구조상 "자본총계"/"당기순이익" 같은
 # account_id가 한 기간 안에 8~9번 반복된다(기초자본/배당/당기순이익반영/기타포괄손익/
 # 기말자본 등 각 행이 같은 태그를 재사용) — 이는 값이 서로 다른 게 정상이며 오류가 아니다.
-# 그래서 매칭 대상을 애초에 계정이 실제로 속한 재무제표 구분(sj_nm)으로 좋혀야 한다.
+# 그래서 매칭 대상을 애초에 계정이 실제로 속한 재무제표 구분(sj_nm)으로 좁혀야 한다.
 _BS_STATEMENTS = frozenset({"재무상태표"})
-# 회사에 따라 손익계산서/포괄손익계산서를 하나로 합쳤 내거나(포괄손익계산서만 존재)
+# 회사에 따라 손익계산서/포괄손익계산서를 하나로 합쳐 내거나(포괄손익계산서만 존재)
 # 둘로 나눠 내므로(손익계산서 + 포괄손익계산서) 둘 다 허용한다.
 _IS_STATEMENTS = frozenset({"손익계산서", "포괄손익계산서"})
 
@@ -131,17 +131,30 @@ RATIO_NAMES = [
 BS_CHART_ITEMS = ["유동자산", "비유동자산", "유동부채", "비유동부채"]
 _WON_PER_EOK = 1e8  # 억원 단위 환산
 
+# 비율이 공란일 때 "왜" 공란인지 설명하기 위한, 비율별 원천 계정 의존관계.
+# 매출총이익률은 매출총이익(직접 태깅 또는 매출액-매출원가 파생)에 의존하는 특수
+# 케이스라 아래 딕셔너리가 아니라 _blank_reason()에서 별도로 처리한다.
+_RATIO_DEPENDENCIES: dict[str, list[str]] = {
+    "유동비율": ["유동자산", "유동부채"],
+    "부채비율": ["부채총계", "자본총계"],
+    "자기자본비율": ["자본총계", "자산총계"],
+    "ROA": ["당기순이익", "자산총계"],
+    "ROE": ["당기순이익", "자본총계"],
+    "영업이익률": ["영업이익", "매출액"],
+    "순이익률": ["당기순이익", "매출액"],
+}
+
 
 def _match_amount(period_df: pd.DataFrame, aliases: dict[str, set[str]]) -> tuple[float, bool]:
     """한 기간·한 재무제표(sj_nm) 내에서 account_id 우선, account_nm 폴백으로 금액을 찾는다.
 
-    먼저 aliases["sj_nm"](예: 재무상태표)으로 대상을 좋힌 뒤 매칭한다 — DART 응답은
-    재무상태표/손익계산서/현금흐름표/자본변동표가 한 테이블에 섮여 있고, 특히 자본변동표는
+    먼저 aliases["sj_nm"](예: 재무상태표)으로 대상을 좁힌 뒤 매칭한다 — DART 응답은
+    재무상태표/손익계산서/현금흐름표/자본변동표가 한 테이블에 섞여 있고, 특히 자본변동표는
     같은 account_id를 여러 행(기초자본/배당/당기순이익반영 등)에서 재사용하므로 sj_nm으로
-    먼저 좋히지 않으면 전혀 무관한 값과 충돌하는 것처럼 보일 수 있다.
+    먼저 좁히지 않으면 전혀 무관한 값과 충돌하는 것처럼 보일 수 있다.
 
     반환: (금액 또는 NaN, ambiguous 여부)
-    sj_nm으로 좋힌 뒤에도 동일 account_id(또는 account_nm)를 가진 행이 여러 개 있을 수
+    sj_nm으로 좁힌 뒤에도 동일 account_id(또는 account_nm)를 가진 행이 여러 개 있을 수
     있다. 값이 전부 같으면 단순 중복 행이라 문제없이 그 값을 쓰지만, 값이 서로 다르면
     어느 쪽이 맞는지 판단할 근거가 없으므로 임의로 첫 번째 값을 택하지 않고
     NaN + ambiguous=True를 반환한다("매핑 실패 시 공란+경고, 임의 추정 금지" 원칙과 동일).
@@ -238,6 +251,71 @@ def standardize_accounts(
     return accounts_wide, missing, derived_notes, ambiguous_matches
 
 
+def _subject_particle(word: str) -> str:
+    """단어 마지막 글자의 받침 유무로 주격조사(이/가)를 고른다.
+
+    예: "매출원가"(받침 없음) -> "가", "매출액"(받침 있음) -> "이".
+    """
+    if not word:
+        return "가"
+    code = ord(word[-1]) - 0xAC00
+    if 0 <= code <= 11171:  # 완성형 한글 음절 범위(가~힣)
+        return "이" if code % 28 != 0 else "가"
+    return "가"
+
+
+def _missing_reason_text(missing_names: list[str]) -> str:
+    joined = ", ".join(missing_names)
+    return f"{joined}{_subject_particle(missing_names[-1])} 없어 산출되지 않습니다."
+
+
+def _account_missing(accounts_wide: pd.DataFrame, name: str, period: str) -> bool:
+    if name not in accounts_wide.index or period not in accounts_wide.columns:
+        return True
+    return math.isnan(accounts_wide.loc[name, period])
+
+
+def _blank_reason(name: str, period: str, accounts_wide: pd.DataFrame) -> str | None:
+    """비율 한 칸(비율명 x 기간)이 공란인 이유를, 실제로 없는 원천 계정명으로 설명한다."""
+    if name == "매출총이익률":
+        missing_names = []
+        if _account_missing(accounts_wide, "매출액", period):
+            missing_names.append("매출액")
+        if _account_missing(accounts_wide, "매출총이익", period):
+            # 매출총이익 자체가 없다는 건 직접 태깅도, 매출액-매출원가 파생도 실패했다는
+            # 뜻이다. 매출액은 위에서 이미 확인했으니, 매출원가 유무로 원인을 좁힌다.
+            if "매출액" not in missing_names and _account_missing(accounts_wide, "매출원가", period):
+                missing_names.append("매출원가")
+            elif not missing_names:
+                missing_names.append("매출총이익")
+        if not missing_names:
+            return None
+        return _missing_reason_text(missing_names)
+
+    deps = _RATIO_DEPENDENCIES.get(name)
+    if not deps:
+        return None
+    missing_names = [d for d in deps if _account_missing(accounts_wide, d, period)]
+    if not missing_names:
+        return None
+    return _missing_reason_text(missing_names)
+
+
+def format_blank_reason_notes(
+    blank_reasons: dict[str, dict[str, str]], periods: list[str]
+) -> list[str]:
+    """blank_reasons를 "[기간] 비율명: 사유" 형태의 출력용 문자열 목록으로 펼친다."""
+    notes: list[str] = []
+    for name in RATIO_NAMES:
+        period_reasons = blank_reasons.get(name)
+        if not period_reasons:
+            continue
+        for period in periods:
+            if period in period_reasons:
+                notes.append(f"[{period}] {name}: {period_reasons[period]}")
+    return notes
+
+
 def _safe_div(numerator: float, denominator: float) -> float:
     if numerator is None or denominator is None:
         return math.nan
@@ -250,11 +328,14 @@ def _safe_div(numerator: float, denominator: float) -> float:
     return numerator / denominator
 
 
-def compute_ratios(long_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str], list[str], list[str]]:
+def compute_ratios(
+    long_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[str], list[str], list[str], dict[str, dict[str, str]]]:
     """3개년 재무비율(단위: %)을 계산한다.
 
     반환: (비율 x 기간 데이터프레임, 매핑 실패 표준계정 목록, 파생 계산 안내 목록,
-           동일 계정코드 중복 매칭으로 공란 처리된 항목 안내 목록)
+           동일 계정코드 중복 매칭으로 공란 처리된 항목 안내 목록,
+           공란 처리된 비율 칸의 사유 {비율명: {기간: 사유}})
     """
     accounts_wide, missing, derived_notes, ambiguous_matches = standardize_accounts(long_df)
     periods_present = list(accounts_wide.columns)
@@ -309,14 +390,22 @@ def compute_ratios(long_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str], list
         change[denom == 0] = math.nan
         ratio_df["전기대비증감률(%)"] = change
 
-    return ratio_df, missing, derived_notes, ambiguous_matches
+    blank_reasons: dict[str, dict[str, str]] = {}
+    for name in RATIO_NAMES:
+        for period in periods_present:
+            if math.isnan(ratio_df.loc[name, period]):
+                reason = _blank_reason(name, period, accounts_wide)
+                if reason:
+                    blank_reasons.setdefault(name, {})[period] = reason
+
+    return ratio_df, missing, derived_notes, ambiguous_matches, blank_reasons
 
 
 def get_bs_chart_items(accounts_wide: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     """그래프용 재무상태표 항목(유동/비유동 자산·부채)을 억원 단위로 추출한다.
 
     반환: (항목 x 기간 데이터프레임(억원), 하나 이상의 기간에서 확보하지 못한 항목 목록)
-    매핑/파생 모두 실패한 항목은 NaN으로 남겨 그래프에서 공란(끓긴 선/빈 막대)으로
+    매핑/파생 모두 실패한 항목은 NaN으로 남겨 그래프에서 공란(끊긴 선/빈 막대)으로
     표시되며 임의로 추정하지 않는다.
     """
     missing = [
