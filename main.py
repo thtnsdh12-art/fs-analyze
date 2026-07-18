@@ -16,7 +16,12 @@ from src import config, dart_client, doc_tree, industry_detect, verification
 from src.excel_export import build_workbook
 from src.financials import pivot_wide, to_long_format
 from src.link_parser import InvalidDartLinkError, extract_dcm_no, extract_rcept_no
-from src.ratios import compute_ratios, get_bs_chart_items, standardize_accounts
+from src.ratios import (
+    compute_ratios,
+    format_blank_reason_notes,
+    get_bs_chart_items,
+    standardize_accounts,
+)
 from src.resolver import ResolveError, resolve_disclosure
 
 _INVALID_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|]')
@@ -132,7 +137,9 @@ def run(url: str, fs_div: str | None = None, output_dir: str = ".") -> None:
     print("\n=== 3개년 재무제표 (단위: 원) ===")
     print(wide_df.to_string())
 
-    ratio_df, missing_accounts, derived_notes, ambiguous_matches = compute_ratios(long_df)
+    ratio_df, missing_accounts, derived_notes, ambiguous_matches, blank_reasons = compute_ratios(
+        long_df
+    )
     accounts_wide, _, _, _ = standardize_accounts(long_df)
     bs_item_df, bs_missing_items = get_bs_chart_items(accounts_wide)
 
@@ -161,6 +168,13 @@ def run(url: str, fs_div: str | None = None, output_dir: str = ".") -> None:
 
     print("\n=== 3개년 재무비율 (단위: %) ===")
     print(ratio_df.to_string(float_format=lambda v: f"{v:,.2f}"))
+
+    ratio_periods = [c for c in ratio_df.columns if c != "전기대비증감률(%)"]
+    blank_reason_notes = format_blank_reason_notes(blank_reasons, ratio_periods)
+    if blank_reason_notes:
+        print("\n[안내] 공란 처리된 비율의 사유:")
+        for note in blank_reason_notes:
+            print(f"  - {note}")
 
     print(
         "\n[면책] 본 결과는 참고용 사전분석 자료이며 감사의견 형성의 유일한 근거가 될 수 없습니다."
@@ -194,6 +208,7 @@ def run(url: str, fs_div: str | None = None, output_dir: str = ".") -> None:
         accounts_wide,
         fs_note=fs_note,
         financial_markers=financial_markers,
+        blank_reasons=blank_reasons,
     )
     fs_label = _fs_div_label(fs_div_used)
     excel_path = Path(output_dir) / f"{_safe_filename(info['corp_name'])}_{fs_label}_결과.xlsx"
