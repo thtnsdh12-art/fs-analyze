@@ -12,7 +12,7 @@ from pathlib import Path
 
 import requests
 
-from src import config, dart_client, doc_tree, verification
+from src import config, dart_client, doc_tree, industry_detect, verification
 from src.excel_export import build_workbook
 from src.financials import pivot_wide, to_long_format
 from src.link_parser import InvalidDartLinkError, extract_dcm_no, extract_rcept_no
@@ -109,6 +109,21 @@ def run(url: str, fs_div: str | None = None, output_dir: str = ".") -> None:
     long_df = to_long_format(raw_df)
     wide_df = pivot_wide(long_df)
 
+    financial_markers = industry_detect.detect_financial_industry(long_df)
+    if financial_markers:
+        print("\n" + "=" * 70)
+        print("⚠️  이 회사는 금융업(은행/보험/지주 등)으로 추정됩니다.")
+        print(
+            "본 도구의 표준 재무비율(유동비율 등)은 일반 기업 기준으로 설계되어 "
+            "있어 다수 지표가 공란 처리될 수 있습니다."
+        )
+        print(
+            "금융업종은 예대율/BIS비율 등 별도 지표가 필요하며, 본 도구는 "
+            "현재 이를 지원하지 않습니다."
+        )
+        print(f"(감지된 금융업 특유 계정: {', '.join(financial_markers)})")
+        print("=" * 70)
+
     missing = long_df[long_df["amount"].isna()]
     if not missing.empty:
         print(f"\n[경고] 금액 파싱 실패 계정 {len(missing)}건 (공란 처리됨):")
@@ -178,6 +193,7 @@ def run(url: str, fs_div: str | None = None, output_dir: str = ".") -> None:
         bs_missing_items,
         accounts_wide,
         fs_note=fs_note,
+        financial_markers=financial_markers,
     )
     fs_label = _fs_div_label(fs_div_used)
     excel_path = Path(output_dir) / f"{_safe_filename(info['corp_name'])}_{fs_label}_결과.xlsx"
