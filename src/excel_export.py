@@ -395,9 +395,7 @@ def _add_screening_sheet(
     개별 계정(수십~수백 개)을 대상으로, 전기 대비 당기 증감이 큰 계정을 찾아낸다.
     """
     ws = wb.create_sheet("스크리닝_전기당기증감")
-    ws.cell(
-        row=1, column=1, value="전기 대비 당기 증감 스크리닝 (분석적 절차)"
-    ).font = TITLE_FONT
+    ws.cell(row=1, column=1, value="전기 대비 당기 증감 스크리닝").font = TITLE_FONT
     ws.cell(
         row=2,
         column=1,
