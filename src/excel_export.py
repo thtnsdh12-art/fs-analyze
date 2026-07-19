@@ -399,6 +399,7 @@ def _add_screening_sheet(
     excluded_notes: list[str],
     threshold_pct: float,
     strong_threshold_pct: float,
+    trend_deviation_threshold_pctp: float,
 ) -> None:
     """"스크리닝_전기당기증감" 시트 — 감사 위험평가용 분석적 절차(analytical procedures).
 
@@ -415,12 +416,16 @@ def _add_screening_sheet(
         value=(
             f"[안내] 재무상태표/손익계산서/현금흐름표의 개별 계정 중 전기 대비 증감률이 "
             f"±{threshold_pct:.0f}%를 초과하는 계정만 추립니다(중요성 기준 미만 소액 계정은 "
-            f"제외). 신규계정(전기=0)·부호전환(흑자↔적자)은 %를 계산하지 않고 별도 표시합니다. "
-            f"재무제표구분(재무상태표→손익계산서→현금흐름표) 순으로 묶은 뒤 그 안에서 "
-            f"증감액(절대금액) 내림차순 정렬하며, ±{strong_threshold_pct:.0f}% 초과인 계정은 "
-            f"노란색으로 강조됩니다. '구분'이 \"증감률초과\"인 항목은 통상적으로 계산된 "
-            f"증감률이 기준을 넘었다는 뜻이며(문제가 없다는 뜻이 아님), 신규계정/부호전환은 "
-            f"애초에 %를 계산할 수 없어 별도 분류된 것입니다."
+            f"제외, 포함 여부는 전기→당기 기준). 신규계정(전기=0)·부호전환(흑자↔적자)은 %를 "
+            f"계산하지 않고 별도 표시합니다. 재무제표구분(재무상태표→손익계산서→현금흐름표) "
+            f"순으로 묶은 뒤 그 안에서 증감액(절대금액) 내림차순 정렬하며, "
+            f"±{strong_threshold_pct:.0f}% 초과인 계정은 '전기→당기 증감률(%)' 칸이 노란색으로 "
+            f"강조됩니다. '구분'이 \"증감률초과\"인 항목은 통상적으로 계산된 증감률이 기준을 "
+            f"넘었다는 뜻이며(문제가 없다는 뜻이 아님), 신규계정/부호전환은 애초에 %를 계산할 "
+            f"수 없어 별도 분류된 것입니다. '전전기→전기 증감률(%)'은 비교 참고용이며, 두 "
+            f"구간의 증감률 차이가 {trend_deviation_threshold_pctp:.0f}%p 이상이면(둘 다 정상 "
+            f"계산된 경우에 한함) '추세이탈'에 표시됩니다 — 단순히 증감률이 큰 게 아니라 "
+            f"이번 기에 갑자기 패턴이 바뀐 계정을 잡아내기 위함입니다."
         ),
     ).font = Font(italic=True)
 
@@ -444,24 +449,31 @@ def _add_screening_sheet(
         ws.cell(row=header_row, column=j, value=col)
     _style_header_row(ws, header_row, len(screening.SCREENING_COLUMNS))
 
+    col_idx = {name: i + 1 for i, name in enumerate(screening.SCREENING_COLUMNS)}
+    amount_cols = ("전전기금액", "전기금액", "당기금액", "증감액")
+    pct_cols = ("전기→당기 증감률(%)", "전전기→전기 증감률(%)")
+
     r = header_row + 1
     for _, row in screening_df.iterrows():
-        ws.cell(row=r, column=1, value=row["재무제표구분"])
-        ws.cell(row=r, column=2, value=row["계정명"])
-        for col, key in ((3, "전기금액"), (4, "당기금액"), (5, "증감액")):
-            cell = ws.cell(row=r, column=col, value=round(float(row[key]), 2))
-            cell.number_format = "#,##0"
-        pct = row["증감률(%)"]
-        pct_cell = ws.cell(row=r, column=6)
-        if not (isinstance(pct, float) and math.isnan(pct)):
-            pct_cell.value = round(float(pct), 2)
-            pct_cell.number_format = "#,##0.00"
-        ws.cell(row=r, column=7, value=row["구분"])
+        ws.cell(row=r, column=col_idx["재무제표구분"], value=row["재무제표구분"])
+        ws.cell(row=r, column=col_idx["계정명"], value=row["계정명"])
+        for key in amount_cols:
+            value = row[key]
+            if not (isinstance(value, float) and math.isnan(value)):
+                cell = ws.cell(row=r, column=col_idx[key], value=round(float(value), 2))
+                cell.number_format = "#,##0"
+        for key in pct_cols:
+            value = row[key]
+            if not (isinstance(value, float) and math.isnan(value)):
+                cell = ws.cell(row=r, column=col_idx[key], value=round(float(value), 2))
+                cell.number_format = "#,##0.00"
+        ws.cell(row=r, column=col_idx["추세이탈"], value=row["추세이탈"] or None)
+        ws.cell(row=r, column=col_idx["구분"], value=row["구분"])
         r += 1
     last_row = r - 1
 
     if not screening_df.empty:
-        pct_col_letter = get_column_letter(6)
+        pct_col_letter = get_column_letter(col_idx["전기→당기 증감률(%)"])
         cell_range = f"{pct_col_letter}{header_row + 1}:{pct_col_letter}{last_row}"
         ws.conditional_formatting.add(
             cell_range,
@@ -609,6 +621,7 @@ def build_workbook(
     screening_threshold_pct: float = 10.0,
     screening_strong_threshold_pct: float = 30.0,
     screening_materiality_pct: float = 1.0,
+    screening_trend_deviation_threshold_pctp: float = screening.TREND_DEVIATION_THRESHOLD_PCTP,
 ) -> Workbook:
     wb = Workbook()
     wb.remove(wb.active)
@@ -637,6 +650,7 @@ def build_workbook(
             screening_excluded_notes or [],
             screening_threshold_pct,
             screening_strong_threshold_pct,
+            screening_trend_deviation_threshold_pctp,
         )
         if long_df is not None:
             total_assets = (
@@ -650,6 +664,7 @@ def build_workbook(
                 total_assets,
                 threshold_pct=screening_threshold_pct,
                 materiality_pct=screening_materiality_pct,
+                trend_deviation_threshold_pctp=screening_trend_deviation_threshold_pctp,
             )
 
     ratio_checks = verification.verify_ratios(accounts_wide, ratio_df)

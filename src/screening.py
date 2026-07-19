@@ -26,10 +26,13 @@ _STATEMENT_ORDER = {"재무상태표": 0, "손익계산서": 1, "포괄손익계
 SCREENING_COLUMNS = [
     "재무제표구분",
     "계정명",
+    "전전기금액",
     "전기금액",
     "당기금액",
     "증감액",
-    "증감률(%)",
+    "전기→당기 증감률(%)",
+    "전전기→전기 증감률(%)",
+    "추세이탈",
     "구분",
 ]
 
@@ -37,23 +40,29 @@ STATUS_NORMAL = "증감률초과"
 STATUS_NEW = "신규계정"
 STATUS_SIGN_FLIP = "부호전환"
 
+TREND_DEVIATION_FLAG = "추세이탈"
+# 전기→당기 증감률과 전전기→전기 증감률의 차이(%p)가 이 값 이상이면 "추세이탈"로 표시한다.
+# 단순히 증감률 자체가 큰 게 아니라, 이번 기에 갑자기 패턴이 바뀐 계정을 잡아내려는 목적.
+TREND_DEVIATION_THRESHOLD_PCTP = 40.0
 
-def _pivot_prior_current(long_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """(sj_nm, account_nm)별 전기/당기 금액을 뽑는다.
+
+def _pivot_periods(long_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """(sj_nm, account_nm)별 전전기/전기/당기 금액을 뽑는다.
 
     같은 (sj_nm, account_nm) 조합이 같은 기간에 서로 다른 금액으로 나타나면(내부
     충돌 — long_df에는 계정 위계 정보가 없어 이름만으로 구분하는 한계상 드물게
-    발생 가능), 임의로 하나를 택하지 않고 그 계정을 제외한다(ratios.py의
-    ambiguous-match 방어와 동일한 원칙: 판단 근거가 없으면 추정하지 않는다).
+    발생 가능), 임의로 하나를 택하지 않고 그 계정을 (3개 기간 전부에서) 제외한다
+    (ratios.py의 ambiguous-match 방어와 동일한 원칙: 판단 근거가 없으면 추정하지 않는다).
 
-    반환: (계정 x [전기, 당기] 금액 데이터프레임(index=[sj_nm, account_nm]),
+    반환: (계정 x [전전기, 전기, 당기] 금액 데이터프레임(index=[sj_nm, account_nm]),
            충돌로 제외된 계정 설명 목록)
     """
     scoped = long_df[
-        long_df["sj_nm"].isin(SCREENING_STATEMENTS) & long_df["period"].isin(["전기", "당기"])
+        long_df["sj_nm"].isin(SCREENING_STATEMENTS)
+        & long_df["period"].isin(["전전기", "전기", "당기"])
     ]
     if scoped.empty:
-        return pd.DataFrame(columns=["전기", "당기"]), []
+        return pd.DataFrame(columns=["전전기", "전기", "당기"]), []
 
     grouped = scoped.groupby(["sj_nm", "account_nm", "period"])["amount"]
     conflicts = grouped.nunique(dropna=False)
@@ -71,11 +80,11 @@ def _pivot_prior_current(long_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]
     wide = clean.pivot_table(
         index=["sj_nm", "account_nm"], columns="period", values="amount", aggfunc="first"
     )
-    for col in ("전기", "당기"):
+    for col in ("전전기", "전기", "당기"):
         if col not in wide.columns:
             wide[col] = math.nan
 
-    return wide[["전기", "당기"]], excluded_notes
+    return wide[["전전기", "전기", "당기"]], excluded_notes
 
 
 def _classify(prior: float, current: float) -> tuple[float, str]:
@@ -107,11 +116,14 @@ def build_screening_df(
       - 중요성 필터 통과: max(|전기|, |당기|) >= 자산총계 x materiality_pct% (소액 계정 노이즈 제외)
       - 그리고 (신규계정 또는 부호전환) 또는 |증감률| > threshold_pct
 
+    포함 여부는 전기→당기 구간만 기준으로 한다(기존과 동일) — 전전기→전기 증감률/
+    추세이탈은 이미 포함된 계정에 컨텍스트를 더하는 용도이지, 별도 포함 조건이 아니다.
+
     반환: (SCREENING_COLUMNS 기준 데이터프레임 — 재무제표구분(재무상태표 ->
            손익계산서/포괄손익계산서 -> 현금흐름표) 순으로 먼저 묶고, 그 안에서
            증감액 절대값 내림차순 정렬, 내부 계정명 충돌로 제외된 항목 설명 목록)
     """
-    wide, excluded_notes = _pivot_prior_current(long_df)
+    wide, excluded_notes = _pivot_periods(long_df)
     if wide.empty or math.isnan(total_assets) or total_assets == 0:
         return pd.DataFrame(columns=SCREENING_COLUMNS), excluded_notes
 
@@ -119,7 +131,7 @@ def build_screening_df(
 
     rows = []
     for (sj_nm, account_nm), row in wide.iterrows():
-        prior, current = row["전기"], row["당기"]
+        prior_year, prior, current = row["전전기"], row["전기"], row["당기"]
         if math.isnan(prior) or math.isnan(current):
             continue
 
@@ -132,14 +144,29 @@ def build_screening_df(
             if math.isnan(change_pct) or abs(change_pct) <= threshold_pct:
                 continue
 
+        prior_change_pct, prior_status = _classify(prior_year, prior)
+
+        trend_flag = ""
+        if (
+            status == STATUS_NORMAL
+            and prior_status == STATUS_NORMAL
+            and not math.isnan(change_pct)
+            and not math.isnan(prior_change_pct)
+            and abs(change_pct - prior_change_pct) >= TREND_DEVIATION_THRESHOLD_PCTP
+        ):
+            trend_flag = TREND_DEVIATION_FLAG
+
         rows.append(
             {
                 "재무제표구분": sj_nm,
                 "계정명": account_nm,
+                "전전기금액": prior_year,
                 "전기금액": prior,
                 "당기금액": current,
                 "증감액": current - prior,
-                "증감률(%)": change_pct,
+                "전기→당기 증감률(%)": change_pct,
+                "전전기→전기 증감률(%)": prior_change_pct,
+                "추세이탈": trend_flag,
                 "구분": status,
             }
         )
