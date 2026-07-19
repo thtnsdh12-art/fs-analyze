@@ -12,7 +12,7 @@ from pathlib import Path
 
 import requests
 
-from src import config, dart_client, doc_tree, industry_detect, verification
+from src import config, dart_client, doc_tree, industry_detect, screening, verification
 from src.excel_export import build_workbook
 from src.financials import pivot_wide, to_long_format
 from src.link_parser import InvalidDartLinkError, extract_dcm_no, extract_rcept_no
@@ -176,6 +176,31 @@ def run(url: str, fs_div: str | None = None, output_dir: str = ".") -> None:
         for note in blank_reason_notes:
             print(f"  - {note}")
 
+    # 재무상태표/손익계산서/현금흐름표의 개별 계정(표준화 이전 원본) 중 전기 대비
+    # 당기 증감이 큰 계정을 찾는 분석적 절차. 자산총계(당기)가 없으면(매핑 실패)
+    # 중요성 기준 자체를 판단할 수 없어 스크리닝을 건너뛴다.
+    total_assets = (
+        accounts_wide.loc["자산총계", "당기"]
+        if "자산총계" in accounts_wide.index and "당기" in accounts_wide.columns
+        else float("nan")
+    )
+    screening_df, screening_excluded_notes = screening.build_screening_df(long_df, total_assets)
+
+    if screening_excluded_notes:
+        print("\n[경고] 동일 계정명으로 매칭된 금액이 서로 달라 스크리닝에서 제외된 항목:")
+        for note in screening_excluded_notes:
+            print(f"  - {note}")
+
+    print("\n=== 전기 대비 당기 증감 스크리닝 (±10% 초과, 중요성 기준 이상) ===")
+    if screening_df.empty:
+        print("(중요성·임계값 기준을 초과하는 계정 없음)")
+    else:
+        print(
+            screening_df.to_string(
+                index=False, float_format=lambda v: f"{v:,.2f}"
+            )
+        )
+
     print(
         "\n[면책] 본 결과는 참고용 사전분석 자료이며 감사의견 형성의 유일한 근거가 될 수 없습니다."
     )
@@ -184,7 +209,8 @@ def run(url: str, fs_div: str | None = None, output_dir: str = ".") -> None:
     # (자산=부채+자본 등)이 성립하는지 확인한다. 결과는 엑셀 "검증" 시트에도 동일하게 남는다.
     ratio_checks = verification.verify_ratios(accounts_wide, ratio_df)
     bs_checks = verification.verify_balance_sheet_identity(accounts_wide)
-    all_checks = ratio_checks + bs_checks
+    screening_checks = verification.verify_screening(long_df, screening_df, total_assets)
+    all_checks = ratio_checks + bs_checks + screening_checks
     failed_checks = [c for c in all_checks if not c.ok]
     if failed_checks:
         print(
@@ -209,6 +235,9 @@ def run(url: str, fs_div: str | None = None, output_dir: str = ".") -> None:
         fs_note=fs_note,
         financial_markers=financial_markers,
         blank_reasons=blank_reasons,
+        long_df=long_df,
+        screening_df=screening_df,
+        screening_excluded_notes=screening_excluded_notes,
     )
     fs_label = _fs_div_label(fs_div_used)
     excel_path = Path(output_dir) / f"{_safe_filename(info['corp_name'])}_{fs_label}_결과.xlsx"
