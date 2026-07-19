@@ -51,11 +51,37 @@ def _style_header_row(ws: Worksheet, row: int, n_cols: int) -> None:
         cell.alignment = Alignment(horizontal="center")
 
 
-def _autofit(ws: Worksheet, n_cols: int, min_width: int = 12) -> None:
+def _display_length(cell) -> int:
+    """셀에 실제로 표시될 문자열 길이를 추정한다.
+
+    숫자 셀은 raw Python 값의 str() 길이가 아니라 number_format(천단위 콤마,
+    소수점 자릿수)을 반영한 표시 문자열 길이를 써야 정확하다 — 그렇지 않으면
+    "#,##0" 포맷의 큰 정수가 str(float) 표현(예: 지수 표기, 불필요한 소수부)과
+    길이가 달라져 열 너비가 실제 표시 폭과 어긋난다.
+    """
+    value = cell.value
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        fmt = cell.number_format or ""
+        if "0.00" in fmt:
+            return len(f"{value:,.2f}")
+        if "#,##0" in fmt:
+            return len(f"{value:,.0f}")
+    return len(str(value))
+
+
+def _autofit(ws: Worksheet, n_cols: int, min_width: int = 12, start_row: int = 1) -> None:
+    """열 너비를 내용에 맞게 자동 조정한다.
+
+    start_row로 헤더/데이터 행부터만 스캔하도록 지정할 수 있다 — 시트 상단의
+    긴 안내/경고 문구(제목 아래 한 문단짜리 [안내] 텍스트 등)를 폭 계산에
+    끼워 넣으면 A열이 그 문구 길이만큼 과도하게 넓어지는 문제가 있어서다.
+    """
     for col in range(1, n_cols + 1):
         letter = get_column_letter(col)
         width = max(
-            (len(str(ws.cell(row=r, column=col).value or "")) for r in range(1, ws.max_row + 1)),
+            (_display_length(ws.cell(row=r, column=col)) for r in range(start_row, ws.max_row + 1)),
             default=min_width,
         )
         ws.column_dimensions[letter].width = max(min_width, width + 2)
@@ -115,7 +141,7 @@ def _add_ratio_sheet(
     _annotate_blank_ratio_cells(ws, ratio_df, table_start, blank_reasons)
     n_cols = len(ratio_df.columns) + 1
 
-    _autofit(ws, n_cols)
+    _autofit(ws, n_cols, start_row=table_start)
     ws.freeze_panes = ws.cell(row=table_start + 1, column=2)
 
     # 요청사항: 그래프는 비율표 "옆"에 배치 -> 표 오른쪽에 빈 열 하나를 띄우고 앵커링한다.
@@ -132,7 +158,7 @@ def _add_bs_item_table(ws: Worksheet, item_df: pd.DataFrame, title_row: int) -> 
     ws.cell(row=title_row, column=1, value="주요 재무상태표 항목 (단위: 억원)").font = TITLE_FONT
     table_start = title_row + 2
     last_row = _write_df(ws, item_df, table_start, "항목")
-    _autofit(ws, len(item_df.columns) + 1)
+    _autofit(ws, len(item_df.columns) + 1, start_row=table_start)
     return table_start
 
 
@@ -257,7 +283,7 @@ def _add_financials_sheet(wb: Workbook, wide_df: pd.DataFrame) -> None:
     ws = wb.create_sheet("재무제표")
     ws.cell(row=1, column=1, value="3개년 재무제표 (단위: 원)").font = TITLE_FONT
     _write_df(ws, wide_df, 3, "계정과목")
-    _autofit(ws, len(wide_df.columns) + 1)
+    _autofit(ws, len(wide_df.columns) + 1, start_row=3)
     ws.freeze_panes = ws.cell(row=4, column=2)
 
 
@@ -480,7 +506,7 @@ def _add_screening_sheet(
     else:
         ws.cell(row=header_row + 1, column=1, value="(중요성·임계값 기준을 초과하는 계정 없음)")
 
-    _autofit(ws, len(screening.SCREENING_COLUMNS))
+    _autofit(ws, len(screening.SCREENING_COLUMNS), min_width=15, start_row=header_row)
     ws.freeze_panes = ws.cell(row=header_row + 1, column=3)
 
 
@@ -585,7 +611,7 @@ def _add_verification_sheet(
         row,
     )
 
-    _autofit(ws, 5)
+    _autofit(ws, 5, start_row=6)
 
 
 def build_workbook(
