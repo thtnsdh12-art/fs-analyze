@@ -133,7 +133,8 @@ _SCREENING_STATEMENTS_INDEPENDENT = frozenset(
 )
 _SCREENING_STATUS_NEW = "신규계정"
 _SCREENING_STATUS_SIGN_FLIP = "부호전환"
-_SCREENING_STATUS_NORMAL = "정상"
+_SCREENING_STATUS_NORMAL = "증감률초과"
+_SCREENING_TREND_FLAG = "추세이탈"
 
 
 def _extract_amount_independent(
@@ -179,15 +180,18 @@ def verify_screening(
     total_assets: float,
     threshold_pct: float = 10.0,
     materiality_pct: float = 1.0,
+    trend_deviation_threshold_pctp: float = 40.0,
 ) -> list[CheckResult]:
     """전기 대비 당기 증감 스크리닝(screening.build_screening_df) 결과를 독립 코드로 대사한다.
 
-    네 가지를 확인한다:
-      1) 스크리닝에 포함된 계정의 전기/당기 금액이 long_df 원본과 정확히 일치하는지
-         (표준화·파생 계산을 거치지 않은 원본 그대로인지)
-      2) 포함된 계정의 증감률이 (당기-전기)/|전기|*100 공식으로 재계산했을 때 일치하는지
-      3) 신규계정/부호전환으로 분류된 계정이 실제로 그 조건을 만족하는지
-      4) (전수 검사) long_df 전체를 훑어, 포함됐어야 할 계정이 빠지지 않았는지(누락)
+    다섯 가지를 확인한다:
+      1) 스크리닝에 포함된 계정의 전전기/전기/당기 금액이 long_df 원본과 정확히
+         일치하는지(표준화·파생 계산을 거치지 않은 원본 그대로인지)
+      2) 포함된 계정의 전기→당기 증감률이 (당기-전기)/|전기|*100 공식으로 재계산했을 때
+         일치하는지, 신규계정/부호전환 분류가 실제 조건을 만족하는지
+      3) 전전기→전기 증감률도 같은 공식으로 재계산했을 때 일치하는지
+      4) 추세이탈 판정(두 구간 증감률 차이가 임계값 이상인지)이 올바른지
+      5) (전수 검사) long_df 전체를 훑어, 포함됐어야 할 계정이 빠지지 않았는지(누락)
          / 기준 미달인데 잘못 포함된 계정은 없는지(오탐) 확인
     """
     results: list[CheckResult] = []
@@ -199,35 +203,37 @@ def verify_screening(
         (row["재무제표구분"], row["계정명"]): row for _, row in screening_df.iterrows()
     }
 
-    # 1)~3): 시트에 실제로 포함된 계정 각각에 대해 원본 금액/증감률/분류를 재확인
+    # 1)~4): 시트에 실제로 포함된 계정 각각에 대해 원본 금액/증감률/분류/추세이탈을 재확인
     for (sj_nm, account_nm), row in screening_index.items():
+        prior_year_check = _extract_amount_independent(long_df, sj_nm, account_nm, "전전기")
         prior_check = _extract_amount_independent(long_df, sj_nm, account_nm, "전기")
         current_check = _extract_amount_independent(long_df, sj_nm, account_nm, "당기")
 
-        results.append(
-            CheckResult(
-                f"[스크리닝-원본금액] {sj_nm} {account_nm} (전기)",
-                "전기",
-                row["전기금액"],
-                prior_check,
-                not _is_missing(prior_check)
-                and abs(prior_check - row["전기금액"]) < AMOUNT_TOLERANCE,
+        for label_suffix, period, reported_amt, recomputed_amt in (
+            ("(전전기)", "전전기", row["전전기금액"], prior_year_check),
+            ("(전기)", "전기", row["전기금액"], prior_check),
+            ("(당기)", "당기", row["당기금액"], current_check),
+        ):
+            if _is_missing(reported_amt) and _is_missing(recomputed_amt):
+                continue  # 둘 다 결측(예: 전전기 데이터 자체가 없는 회사) -> 대사 대상 아님
+            ok = (
+                not _is_missing(reported_amt)
+                and not _is_missing(recomputed_amt)
+                and abs(recomputed_amt - reported_amt) < AMOUNT_TOLERANCE
             )
-        )
-        results.append(
-            CheckResult(
-                f"[스크리닝-원본금액] {sj_nm} {account_nm} (당기)",
-                "당기",
-                row["당기금액"],
-                current_check,
-                not _is_missing(current_check)
-                and abs(current_check - row["당기금액"]) < AMOUNT_TOLERANCE,
+            results.append(
+                CheckResult(
+                    f"[스크리닝-원본금액] {sj_nm} {account_nm} {label_suffix}",
+                    period,
+                    reported_amt if not _is_missing(reported_amt) else math.nan,
+                    recomputed_amt,
+                    ok,
+                )
             )
-        )
 
         pct, status = _independent_change_pct_and_status(prior_check, current_check)
         if row["구분"] == _SCREENING_STATUS_NORMAL:
-            reported_pct = row["증감률(%)"]
+            reported_pct = row["전기→당기 증감률(%)"]
             ok = (
                 status == _SCREENING_STATUS_NORMAL
                 and not _is_missing(pct)
@@ -250,6 +256,53 @@ def verify_screening(
                     ok,
                 )
             )
+
+        # 전전기→전기 증감률 재계산 대사 — 둘 중 하나라도 결측이면 비교 자체가 불가하므로
+        # 그 경우 pct_check는 NaN, status_check는 None으로 둔다(신규/부호전환도 포함해서
+        # _independent_change_pct_and_status와 동일한 규칙으로 재분류).
+        if _is_missing(prior_year_check) or _is_missing(prior_check):
+            prior_pct_check, prior_status_check = math.nan, None
+        else:
+            prior_pct_check, prior_status_check = _independent_change_pct_and_status(
+                prior_year_check, prior_check
+            )
+        reported_prior_pct = row["전전기→전기 증감률(%)"]
+        if not (_is_missing(reported_prior_pct) and _is_missing(prior_pct_check)):
+            ok = (
+                prior_status_check == _SCREENING_STATUS_NORMAL
+                and not _is_missing(prior_pct_check)
+                and not _is_missing(reported_prior_pct)
+                and abs(prior_pct_check - reported_prior_pct) < RATIO_TOLERANCE
+            )
+            results.append(
+                CheckResult(
+                    f"[스크리닝-전전기증감률] {sj_nm} {account_nm}",
+                    "전전기→전기",
+                    reported_prior_pct if not _is_missing(reported_prior_pct) else math.nan,
+                    prior_pct_check,
+                    ok,
+                )
+            )
+
+        # 추세이탈 판정 재계산 — 두 구간 모두 정상적으로 증감률이 나온 경우에만 비교 가능.
+        trend_should_flag = (
+            status == _SCREENING_STATUS_NORMAL
+            and prior_status_check == _SCREENING_STATUS_NORMAL
+            and not _is_missing(pct)
+            and not _is_missing(prior_pct_check)
+            and abs(pct - prior_pct_check) >= trend_deviation_threshold_pctp
+        )
+        reported_flag = row["추세이탈"] == _SCREENING_TREND_FLAG
+        ok = reported_flag == trend_should_flag
+        results.append(
+            CheckResult(
+                f"[스크리닝-추세이탈] {sj_nm} {account_nm}",
+                "추세이탈판정",
+                1.0 if trend_should_flag else 0.0,
+                1.0 if reported_flag else 0.0,
+                ok,
+            )
+        )
 
     # 4) 전수 검사: long_df에 등장하는 모든 (sj_nm, account_nm) 조합을 독립적으로
     #    훑어, 스크리닝 결과와 어긋나는 누락/오탐이 있는지 집계한다.
