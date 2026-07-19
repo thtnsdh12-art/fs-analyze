@@ -111,21 +111,9 @@ def _add_ratio_sheet(
     ws.cell(row=1, column=1, value="3개년 재무비율 (단위: %)").font = TITLE_FONT
 
     table_start = 3
-    last_row = _write_df(ws, ratio_df, table_start, "비율명")
+    _write_df(ws, ratio_df, table_start, "비율명")
     _annotate_blank_ratio_cells(ws, ratio_df, table_start, blank_reasons)
     n_cols = len(ratio_df.columns) + 1
-
-    # 전기대비증감률(%) 컬럼에서 급변동(|증감률|>=20%)을 감사 위험평가 관점에서 강조 표시
-    if "전기대비증감률(%)" in ratio_df.columns:
-        change_col = ratio_df.columns.get_loc("전기대비증감률(%)") + 2
-        col_letter = get_column_letter(change_col)
-        cell_range = f"{col_letter}{table_start + 1}:{col_letter}{last_row}"
-        ws.conditional_formatting.add(
-            cell_range, CellIsRule(operator="greaterThanOrEqual", formula=["20"], fill=WARN_FILL)
-        )
-        ws.conditional_formatting.add(
-            cell_range, CellIsRule(operator="lessThanOrEqual", formula=["-20"], fill=WARN_FILL)
-        )
 
     _autofit(ws, n_cols)
     ws.freeze_panes = ws.cell(row=table_start + 1, column=2)
