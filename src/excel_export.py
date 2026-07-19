@@ -21,11 +21,12 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from . import verification
+from . import screening, verification
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
 WARN_FILL = PatternFill("solid", fgColor="FFC7CE")
+STRONG_WARN_FILL = PatternFill("solid", fgColor="FF4C4C")
 TITLE_FONT = Font(bold=True, size=14)
 
 # 감사 위험 판단의 핵심 비율만 "메인" 그래프에 태운다(나머지 3개 수익성 비율은 표로만 제공).
@@ -388,6 +389,108 @@ def _add_bs_detail_sheet(wb: Workbook, bs_item_df: pd.DataFrame) -> None:
     )
 
 
+def _add_screening_sheet(
+    wb: Workbook,
+    screening_df: pd.DataFrame,
+    excluded_notes: list[str],
+    threshold_pct: float,
+    strong_threshold_pct: float,
+) -> None:
+    """"스크리닝_전기당기증감" 시트 — 감사 위험평가용 분석적 절차(analytical procedures).
+
+    표준 8개 비율과 달리 재무상태표/손익계산서/현금흐름표에 속한 회사의 모든
+    개별 계정(수십~수백 개)을 대상으로, 전기 대비 당기 증감이 큰 계정을 찾아낸다.
+    """
+    ws = wb.create_sheet("스크리닝_전기당기증감")
+    ws.cell(
+        row=1, column=1, value="전기 대비 당기 증감 스크리닝 (분석적 절차)"
+    ).font = TITLE_FONT
+    ws.cell(
+        row=2,
+        column=1,
+        value=(
+            f"[안내] 재무상태표/손익계산서/현금흐름표의 개별 계정 중 전기 대비 증감률이 "
+            f"±{threshold_pct:.0f}%를 초과하는 계정만 추립니다(중요성 기준 미만 소액 계정은 "
+            f"제외). 신규계정(전기=0)·부호전환(흑자↔적자)은 %를 계산하지 않고 별도 표시합니다. "
+            f"증감액(절대금액) 내림차순 정렬이며, ±{strong_threshold_pct:.0f}% 초과는 진하게, "
+            f"±{threshold_pct:.0f}~{strong_threshold_pct:.0f}%는 연하게 강조됩니다."
+        ),
+    ).font = Font(italic=True)
+
+    if excluded_notes:
+        r = 4
+        ws.cell(
+            row=r,
+            column=1,
+            value="[경고] 동일 계정명으로 매칭된 금액이 서로 달라 스크리닝에서 제외된 항목",
+        ).font = Font(bold=True, color="C00000")
+        r += 1
+        for note in excluded_notes:
+            ws.cell(row=r, column=1, value=note)
+            r += 1
+        table_start = r + 1
+    else:
+        table_start = 4
+
+    header_row = table_start
+    for j, col in enumerate(screening.SCREENING_COLUMNS, start=1):
+        ws.cell(row=header_row, column=j, value=col)
+    _style_header_row(ws, header_row, len(screening.SCREENING_COLUMNS))
+
+    r = header_row + 1
+    for _, row in screening_df.iterrows():
+        ws.cell(row=r, column=1, value=row["재무제표구분"])
+        ws.cell(row=r, column=2, value=row["계정명"])
+        for col, key in ((3, "전기금액"), (4, "당기금액"), (5, "증감액")):
+            cell = ws.cell(row=r, column=col, value=round(float(row[key]), 2))
+            cell.number_format = "#,##0"
+        pct = row["증감률(%)"]
+        pct_cell = ws.cell(row=r, column=6)
+        if not (isinstance(pct, float) and math.isnan(pct)):
+            pct_cell.value = round(float(pct), 2)
+            pct_cell.number_format = "#,##0.00"
+        ws.cell(row=r, column=7, value=row["구분"])
+        r += 1
+    last_row = r - 1
+
+    if not screening_df.empty:
+        pct_col_letter = get_column_letter(6)
+        cell_range = f"{pct_col_letter}{header_row + 1}:{pct_col_letter}{last_row}"
+        ws.conditional_formatting.add(
+            cell_range,
+            CellIsRule(
+                operator="greaterThan", formula=[str(strong_threshold_pct)], fill=STRONG_WARN_FILL
+            ),
+        )
+        ws.conditional_formatting.add(
+            cell_range,
+            CellIsRule(
+                operator="lessThan", formula=[str(-strong_threshold_pct)], fill=STRONG_WARN_FILL
+            ),
+        )
+        ws.conditional_formatting.add(
+            cell_range,
+            CellIsRule(
+                operator="between",
+                formula=[str(threshold_pct), str(strong_threshold_pct)],
+                fill=WARN_FILL,
+            ),
+        )
+        ws.conditional_formatting.add(
+            cell_range,
+            CellIsRule(
+                operator="between",
+                formula=[str(-strong_threshold_pct), str(-threshold_pct)],
+                fill=WARN_FILL,
+            ),
+        )
+    else:
+        ws.cell(row=header_row + 1, column=1, value="(중요성·임계값 기준을 초과하는 계정 없음)")
+
+    _autofit(ws, len(screening.SCREENING_COLUMNS))
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=3)
+
+
 def _write_check_table(
     ws: Worksheet,
     title: str,
@@ -427,6 +530,7 @@ def _add_verification_sheet(
     wb: Workbook,
     ratio_checks: list[verification.CheckResult],
     bs_checks: list[verification.CheckResult],
+    screening_checks: list[verification.CheckResult] | None = None,
 ) -> None:
     """"검증" 시트 — ratios.py 계산 로직과 완전히 별개의 코드로 재계산한 대사 결과.
 
@@ -447,7 +551,8 @@ def _add_verification_sheet(
         ),
     ).font = Font(italic=True)
 
-    all_checks = ratio_checks + bs_checks
+    screening_checks = screening_checks or []
+    all_checks = ratio_checks + bs_checks + screening_checks
     failed = [c for c in all_checks if not c.ok]
     if failed:
         summary_cell = ws.cell(
@@ -471,11 +576,19 @@ def _add_verification_sheet(
         row,
     )
     row += 2
-    _write_check_table(
+    row = _write_check_table(
         ws,
         "2) 재무상태표 등식 검증 (단위: 원)",
         ["항목", "기간", "좌변(합계)", "우변(구성요소 합)", "일치여부"],
         bs_checks,
+        row,
+    )
+    row += 2
+    _write_check_table(
+        ws,
+        "3) 전기 대비 당기 증감 스크리닝 검증 (원본금액 대사 + 증감률/분류 재계산 + 전수 검사)",
+        ["검증항목", "기간", "기준값", "재계산값", "일치여부"],
+        screening_checks,
         row,
     )
 
@@ -495,6 +608,12 @@ def build_workbook(
     fs_note: str = "",
     financial_markers: list[str] | None = None,
     blank_reasons: dict[str, dict[str, str]] | None = None,
+    long_df: pd.DataFrame | None = None,
+    screening_df: pd.DataFrame | None = None,
+    screening_excluded_notes: list[str] | None = None,
+    screening_threshold_pct: float = 10.0,
+    screening_strong_threshold_pct: float = 30.0,
+    screening_materiality_pct: float = 1.0,
 ) -> Workbook:
     wb = Workbook()
     wb.remove(wb.active)
@@ -515,9 +634,32 @@ def build_workbook(
     _add_ratio_sheet(wb, ratio_df, blank_reasons=blank_reasons)
     _add_bs_detail_sheet(wb, bs_item_df)
 
+    screening_checks: list[verification.CheckResult] = []
+    if screening_df is not None:
+        _add_screening_sheet(
+            wb,
+            screening_df,
+            screening_excluded_notes or [],
+            screening_threshold_pct,
+            screening_strong_threshold_pct,
+        )
+        if long_df is not None:
+            total_assets = (
+                accounts_wide.loc["자산총계", "당기"]
+                if "자산총계" in accounts_wide.index and "당기" in accounts_wide.columns
+                else math.nan
+            )
+            screening_checks = verification.verify_screening(
+                long_df,
+                screening_df,
+                total_assets,
+                threshold_pct=screening_threshold_pct,
+                materiality_pct=screening_materiality_pct,
+            )
+
     ratio_checks = verification.verify_ratios(accounts_wide, ratio_df)
     bs_checks = verification.verify_balance_sheet_identity(accounts_wide)
-    _add_verification_sheet(wb, ratio_checks, bs_checks)
+    _add_verification_sheet(wb, ratio_checks, bs_checks, screening_checks)
 
     wb.active = 0
     return wb
