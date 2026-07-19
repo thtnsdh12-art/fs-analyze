@@ -164,7 +164,7 @@ def test_verify_screening_detects_wrong_reported_change_pct():
     long_df = _screening_long_df()
     screening_df, _ = build_screening_df(long_df, _TOTAL_ASSETS)
     idx = screening_df.index[screening_df["계정명"] == "정상초과계정"][0]
-    screening_df.loc[idx, "증감률(%)"] = 999.0  # 의도적으로 틀린 값 주입
+    screening_df.loc[idx, "전기→당기 증감률(%)"] = 999.0  # 의도적으로 틀린 값 주입
 
     results = verification.verify_screening(long_df, screening_df, _TOTAL_ASSETS)
 
@@ -221,8 +221,8 @@ def test_verify_screening_detects_false_positive():
                 "전기금액": 10.0,
                 "당기금액": 100.0,
                 "증감액": 90.0,
-                "증감률(%)": 900.0,
-                "구분": "정상",
+                "전기→당기 증감률(%)": 900.0,
+                "구분": "증감률초과",
             }
         ]
     )
@@ -240,3 +240,69 @@ def test_verify_screening_empty_when_total_assets_missing():
     screening_df, _ = build_screening_df(long_df, _TOTAL_ASSETS)
 
     assert verification.verify_screening(long_df, screening_df, math.nan) == []
+
+
+# --- 전전기→전기 증감률 / 추세이탈 검증 (별도 fixture) ---
+
+_TREND_ROWS = [
+    # 전전기→전기 +25%, 전기→당기 +50% (차이 25%p < 40%p -> 추세이탈 아님)
+    ("재무상태표", "정상추세계정", "전전기", 8_000),
+    ("재무상태표", "정상추세계정", "전기", 10_000),
+    ("재무상태표", "정상추세계정", "당기", 15_000),
+    # 전전기→전기 +100%, 전기→당기 +50% (차이 50%p >= 40%p -> 추세이탈)
+    ("재무상태표", "추세이탈계정", "전전기", 5_000),
+    ("재무상태표", "추세이탈계정", "전기", 10_000),
+    ("재무상태표", "추세이탈계정", "당기", 15_000),
+]
+
+
+def _trend_long_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "period": period,
+                "period_label": period,
+                "sj_nm": sj_nm,
+                "account_nm": account_nm,
+                "account_id": None,
+                "amount": float(amount),
+            }
+            for sj_nm, account_nm, period, amount in _TREND_ROWS
+        ]
+    )
+
+
+def test_verify_screening_all_pass_with_trend_columns():
+    long_df = _trend_long_df()
+    screening_df, _ = build_screening_df(long_df, _TOTAL_ASSETS)
+
+    results = verification.verify_screening(long_df, screening_df, _TOTAL_ASSETS)
+
+    assert results
+    assert all(r.ok for r in results)
+
+
+def test_verify_screening_detects_wrong_prior_year_change_pct():
+    long_df = _trend_long_df()
+    screening_df, _ = build_screening_df(long_df, _TOTAL_ASSETS)
+    idx = screening_df.index[screening_df["계정명"] == "정상추세계정"][0]
+    screening_df.loc[idx, "전전기→전기 증감률(%)"] = 999.0  # 의도적으로 틀린 값 주입
+
+    results = verification.verify_screening(long_df, screening_df, _TOTAL_ASSETS)
+
+    failed = [r for r in results if not r.ok]
+    assert any(
+        "정상추세계정" in r.label and "전전기증감률" in r.label for r in failed
+    )
+
+
+def test_verify_screening_detects_wrong_trend_flag():
+    long_df = _trend_long_df()
+    screening_df, _ = build_screening_df(long_df, _TOTAL_ASSETS)
+    idx = screening_df.index[screening_df["계정명"] == "정상추세계정"][0]
+    screening_df.loc[idx, "추세이탈"] = "추세이탈"  # 실제로는 25%p 차이라 추세이탈이 아닌데 조작
+
+    results = verification.verify_screening(long_df, screening_df, _TOTAL_ASSETS)
+
+    failed = [r for r in results if not r.ok]
+    assert any("정상추세계정" in r.label and "추세이탈" in r.label for r in failed)
