@@ -25,8 +25,12 @@ from . import screening, verification
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
-WARN_FILL = PatternFill("solid", fgColor="FFC7CE")
-SCREENING_HIGHLIGHT_FILL = PatternFill("solid", fgColor="FFFF00")
+# 조건부 서식(dxf)의 solid 패턴은 fgColor가 아니라 bgColor를 실제 렌더링 색상으로
+# 쓴다(OOXML/openpyxl의 잘 알려진 함정) — fgColor만 지정하면 Excel에서 색이 전혀
+# 안 보인다. start_color/end_color(=fgColor/bgColor 별칭)를 동일하게 지정해야
+# 일반 셀 채우기와 조건부 서식 양쪽 모두에서 올바르게 렌더링된다.
+WARN_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+SCREENING_HIGHLIGHT_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 TITLE_FONT = Font(bold=True, size=14)
 
 # 감사 위험 판단의 핵심 비율만 "메인" 그래프에 태운다(나머지 3개 수익성 비율은 표로만 제공).
