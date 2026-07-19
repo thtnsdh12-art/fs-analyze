@@ -3,7 +3,14 @@ import math
 import pandas as pd
 import pytest
 
-from src.screening import STATUS_NEW, STATUS_NORMAL, STATUS_SIGN_FLIP, build_screening_df
+from src.screening import (
+    STATUS_NEW,
+    STATUS_NORMAL,
+    STATUS_SIGN_FLIP,
+    TREND_DEVIATION_FLAG,
+    TREND_DEVIATION_THRESHOLD_PCTP,
+    build_screening_df,
+)
 
 TOTAL_ASSETS = 100_000.0  # 중요성 기준(1%) = 1,000
 
@@ -83,11 +90,11 @@ def test_new_account_and_sign_flip_bypass_percentage_and_are_flagged():
     by_name = result.set_index("계정명")
 
     assert by_name.loc["신규계정", "구분"] == STATUS_NEW
-    assert math.isnan(by_name.loc["신규계정", "증감률(%)"])
+    assert math.isnan(by_name.loc["신규계정", "전기→당기 증감률(%)"])
     assert by_name.loc["신규계정", "증감액"] == pytest.approx(8_000)
 
     assert by_name.loc["부호전환계정", "구분"] == STATUS_SIGN_FLIP
-    assert math.isnan(by_name.loc["부호전환계정", "증감률(%)"])
+    assert math.isnan(by_name.loc["부호전환계정", "전기→당기 증감률(%)"])
     assert by_name.loc["부호전환계정", "증감액"] == pytest.approx(-5_500)
 
 
@@ -98,7 +105,7 @@ def test_normal_account_change_pct_formula():
 
     row = by_name.loc["정상초과계정"]
     assert row["구분"] == STATUS_NORMAL
-    assert row["증감률(%)"] == pytest.approx((15_000 - 10_000) / 10_000 * 100)
+    assert row["전기→당기 증감률(%)"] == pytest.approx((15_000 - 10_000) / 10_000 * 100)
     assert row["증감액"] == pytest.approx(5_000)
 
 
@@ -135,3 +142,70 @@ def test_empty_when_total_assets_missing_or_zero():
 
     result_zero, _ = build_screening_df(long_df, 0.0)
     assert result_zero.empty
+
+
+# --- 전전기 컬럼 / 추세이탈 플래그 (별도 fixture — 기존 정렬 테스트를 건드리지 않기 위함) ---
+
+_TREND_ROWS = [
+    # 전전기=8,000 -> 전전기→전기 +25%, 전기→당기 +50% (차이 25%p < 40%p -> 추세이탈 아님)
+    ("재무상태표", "정상추세계정", "전전기", 8_000),
+    ("재무상태표", "정상추세계정", "전기", 10_000),
+    ("재무상태표", "정상추세계정", "당기", 15_000),
+    # 전전기→전기 +100%, 전기→당기 +50% (차이 50%p >= 40%p -> 추세이탈)
+    ("재무상태표", "추세이탈계정", "전전기", 5_000),
+    ("재무상태표", "추세이탈계정", "전기", 10_000),
+    ("재무상태표", "추세이탈계정", "당기", 15_000),
+    # 전전기→전기 구간이 부호전환이라 두 구간 다 정상이 아니므로 추세이탈 판정 불가(공란)
+    ("재무상태표", "직전부호전환계정", "전전기", -2_000),
+    ("재무상태표", "직전부호전환계정", "전기", 3_000),
+    ("재무상태표", "직전부호전환계정", "당기", 6_000),
+    # 전전기 데이터 자체가 없음 -> 전전기금액/전전기증감률/추세이탈 모두 공란이어야 함
+    ("재무상태표", "전전기없음계정", "전기", 10_000),
+    ("재무상태표", "전전기없음계정", "당기", 16_000),
+]
+
+
+def test_prior_year_amount_and_change_pct_computed():
+    long_df = _long_df(_TREND_ROWS)
+    result, _ = build_screening_df(long_df, TOTAL_ASSETS)
+    by_name = result.set_index("계정명")
+
+    row = by_name.loc["정상추세계정"]
+    assert row["전전기금액"] == pytest.approx(8_000)
+    assert row["전전기→전기 증감률(%)"] == pytest.approx((10_000 - 8_000) / 8_000 * 100)
+    assert row["추세이탈"] == ""  # 차이 25%p < 40%p
+
+
+def test_trend_deviation_flagged_when_pattern_changes_sharply():
+    long_df = _long_df(_TREND_ROWS)
+    result, _ = build_screening_df(long_df, TOTAL_ASSETS)
+    by_name = result.set_index("계정명")
+
+    assert by_name.loc["추세이탈계정", "추세이탈"] == TREND_DEVIATION_FLAG
+    current_pct = by_name.loc["추세이탈계정", "전기→당기 증감률(%)"]
+    prior_pct = by_name.loc["추세이탈계정", "전전기→전기 증감률(%)"]
+    assert abs(current_pct - prior_pct) >= TREND_DEVIATION_THRESHOLD_PCTP
+
+
+def test_trend_deviation_blank_when_prior_leg_not_normal():
+    """전전기→전기 구간이 부호전환이면 두 %를 비교할 수 없으므로 추세이탈은 공란이어야 한다."""
+    long_df = _long_df(_TREND_ROWS)
+    result, _ = build_screening_df(long_df, TOTAL_ASSETS)
+    by_name = result.set_index("계정명")
+
+    row = by_name.loc["직전부호전환계정"]
+    assert math.isnan(row["전전기→전기 증감률(%)"])
+    assert row["추세이탈"] == ""
+
+
+def test_prior_year_missing_leaves_related_columns_blank():
+    long_df = _long_df(_TREND_ROWS)
+    result, _ = build_screening_df(long_df, TOTAL_ASSETS)
+    by_name = result.set_index("계정명")
+
+    row = by_name.loc["전전기없음계정"]
+    assert math.isnan(row["전전기금액"])
+    assert math.isnan(row["전전기→전기 증감률(%)"])
+    assert row["추세이탈"] == ""
+    # 전기→당기 leg는 정상적으로 포함되어야 함(전전기 유무와 무관)
+    assert row["전기→당기 증감률(%)"] == pytest.approx(60.0)
