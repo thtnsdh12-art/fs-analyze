@@ -19,6 +19,10 @@ import pandas as pd
 # 자본변동표는 제외 (모듈 docstring 참고)
 SCREENING_STATEMENTS = frozenset({"재무상태표", "손익계산서", "포괄손익계산서", "현금흐름표"})
 
+# 정렬 1순위(재무제표구분): 재무상태표 -> 손익계산서/포괄손익계산서 -> 현금흐름표 순.
+# 회사에 따라 손익계산서/포괄손익계산서 중 하나만 쓰므로 같은 순위로 묶는다.
+_STATEMENT_ORDER = {"재무상태표": 0, "손익계산서": 1, "포괄손익계산서": 1, "현금흐름표": 2}
+
 SCREENING_COLUMNS = [
     "재무제표구분",
     "계정명",
@@ -29,7 +33,7 @@ SCREENING_COLUMNS = [
     "구분",
 ]
 
-STATUS_NORMAL = "정상"
+STATUS_NORMAL = "증감률초과"
 STATUS_NEW = "신규계정"
 STATUS_SIGN_FLIP = "부호전환"
 
@@ -103,8 +107,9 @@ def build_screening_df(
       - 중요성 필터 통과: max(|전기|, |당기|) >= 자산총계 x materiality_pct% (소액 계정 노이즈 제외)
       - 그리고 (신규계정 또는 부호전환) 또는 |증감률| > threshold_pct
 
-    반환: (SCREENING_COLUMNS 기준 데이터프레임, 증감액 절대값 내림차순 정렬,
-           내부 계정명 충돌로 제외된 항목 설명 목록)
+    반환: (SCREENING_COLUMNS 기준 데이터프레임 — 재무제표구분(재무상태표 ->
+           손익계산서/포괄손익계산서 -> 현금흐름표) 순으로 먼저 묶고, 그 안에서
+           증감액 절대값 내림차순 정렬, 내부 계정명 충돌로 제외된 항목 설명 목록)
     """
     wide, excluded_notes = _pivot_prior_current(long_df)
     if wide.empty or math.isnan(total_assets) or total_assets == 0:
@@ -141,11 +146,16 @@ def build_screening_df(
 
     result = pd.DataFrame(rows, columns=SCREENING_COLUMNS)
     if not result.empty:
-        result = result.reindex(
-            result["증감액"].abs().sort_values(ascending=False).index
-        ).reset_index(drop=True)
+        statement_rank = result["재무제표구분"].map(_STATEMENT_ORDER)
+        sort_key = pd.DataFrame(
+            {"statement_rank": statement_rank, "abs_change": result["증감액"].abs()}
+        )
+        order = sort_key.sort_values(
+            ["statement_rank", "abs_change"], ascending=[True, False]
+        ).index
+        result = result.reindex(order).reset_index(drop=True)
 
-    # strong_threshold_pct는 계산에는 안 쓰이고 엑셀 조건부 서식(진하게/연하게 구분)
+    # strong_threshold_pct는 계산에는 안 쓰이고 엑셀 조건부 서식(노란색 강조)
     # 임계값으로 excel_export.py에서 참조한다. 함수 시그니처에 남겨 호출부가
     # 두 임계값을 한 곳(build_screening_df 호출)에서 관리할 수 있게 한다.
     del strong_threshold_pct

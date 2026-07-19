@@ -26,7 +26,7 @@ from . import screening, verification
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
 WARN_FILL = PatternFill("solid", fgColor="FFC7CE")
-STRONG_WARN_FILL = PatternFill("solid", fgColor="FF4C4C")
+SCREENING_HIGHLIGHT_FILL = PatternFill("solid", fgColor="FFFF00")
 TITLE_FONT = Font(bold=True, size=14)
 
 # 감사 위험 판단의 핵심 비율만 "메인" 그래프에 태운다(나머지 3개 수익성 비율은 표로만 제공).
@@ -412,8 +412,11 @@ def _add_screening_sheet(
             f"[안내] 재무상태표/손익계산서/현금흐름표의 개별 계정 중 전기 대비 증감률이 "
             f"±{threshold_pct:.0f}%를 초과하는 계정만 추립니다(중요성 기준 미만 소액 계정은 "
             f"제외). 신규계정(전기=0)·부호전환(흑자↔적자)은 %를 계산하지 않고 별도 표시합니다. "
-            f"증감액(절대금액) 내림차순 정렬이며, ±{strong_threshold_pct:.0f}% 초과는 진하게, "
-            f"±{threshold_pct:.0f}~{strong_threshold_pct:.0f}%는 연하게 강조됩니다."
+            f"재무제표구분(재무상태표→손익계산서→현금흐름표) 순으로 묶은 뒤 그 안에서 "
+            f"증감액(절대금액) 내림차순 정렬하며, ±{strong_threshold_pct:.0f}% 초과인 계정은 "
+            f"노란색으로 강조됩니다. '구분'이 \"증감률초과\"인 항목은 통상적으로 계산된 "
+            f"증감률이 기준을 넘었다는 뜻이며(문제가 없다는 뜻이 아님), 신규계정/부호전환은 "
+            f"애초에 %를 계산할 수 없어 별도 분류된 것입니다."
         ),
     ).font = Font(italic=True)
 
@@ -459,29 +462,17 @@ def _add_screening_sheet(
         ws.conditional_formatting.add(
             cell_range,
             CellIsRule(
-                operator="greaterThan", formula=[str(strong_threshold_pct)], fill=STRONG_WARN_FILL
+                operator="greaterThan",
+                formula=[str(strong_threshold_pct)],
+                fill=SCREENING_HIGHLIGHT_FILL,
             ),
         )
         ws.conditional_formatting.add(
             cell_range,
             CellIsRule(
-                operator="lessThan", formula=[str(-strong_threshold_pct)], fill=STRONG_WARN_FILL
-            ),
-        )
-        ws.conditional_formatting.add(
-            cell_range,
-            CellIsRule(
-                operator="between",
-                formula=[str(threshold_pct), str(strong_threshold_pct)],
-                fill=WARN_FILL,
-            ),
-        )
-        ws.conditional_formatting.add(
-            cell_range,
-            CellIsRule(
-                operator="between",
-                formula=[str(-strong_threshold_pct), str(-threshold_pct)],
-                fill=WARN_FILL,
+                operator="lessThan",
+                formula=[str(-strong_threshold_pct)],
+                fill=SCREENING_HIGHLIGHT_FILL,
             ),
         )
     else:
